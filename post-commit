@@ -1,0 +1,259 @@
+#!/usr/bin/python
+import os
+import re
+import sys
+import logging
+
+from subprocess import Popen, PIPE
+
+logging.basicConfig(filename='/var/lib/svn/Test/hooks/1_post.log', level=logging.DEBUG)
+
+REPOS, REV, TXN_NAME = sys.argv[1:]
+
+logging.debug(REPOS)
+logging.debug(REV)
+logging.debug(TXN_NAME)
+logging.debug('"""""""""""""""""""""""""""""""""""""""""""""""""""""""""')
+SVNADMIN = '/usr/bin/svnadmin'
+
+MAPPINGS = [
+    {
+        'FROM': {'REPOS': '/var/lib/svn/Test', 'PATH': 'A'},
+        'TO':   {'REPOS': '/var/lib/svn/Test', 'PATH': 'B'}
+    },
+    {
+        'FROM': {'REPOS': '/var/lib/svn/Test', 'PATH': 'A'},
+        'TO':   {'REPOS': '/var/lib/svn/Test', 'PATH': 'C'}
+    },
+    {
+        'FROM': {'REPOS': '/var/lib/svn/Test', 'PATH': 'A'},
+        'TO':   {'REPOS': '/var/lib/svn/Test', 'PATH': 'D'}
+    },
+]
+
+there_were_errors = False
+processed_to_repos = []
+revision_content = None
+
+if revision_content is None:
+    dump_process = Popen([SVNADMIN, 'dump', REPOS, '-r', REV, '--incremental', '-q'], stdout=PIPE, stderr=PIPE)
+    #logging.debug(dump_process)
+    revision_content, errors = dump_process.communicate()
+    if errors:            
+        there_were_errors = True
+#logging.debug(revision_content)
+logging.debug('----------------------- Update Revision -------------------------')
+
+sys_dir_path = os.path.dirname(os.path.realpath(__file__))
+logging.debug(sys_dir_path)
+with open(sys_dir_path + '/' + 'Test/A/test1.josn', 'w') as f:
+	json.dump(MAPPING, f)
+def update_revision(revision):
+    catch = revision.split('\n')
+    logging.debug(catch)
+    catch_len = len(catch)
+    catch_index = 0
+    u_rev = []
+    changed_revision = ''
+    path_flag = False
+    content_flag = False
+    change_flag = False
+    path = ''
+    kind = ''
+    action = ''
+    content = []
+    for line in catch:
+        catch_index += 1
+        if re.search(r'Node-path: ',line, re.M | re.I) and content_flag == False:
+            path = re.sub(r'Node-path: ', '', line)
+            path_flag = True
+            content = []
+        elif re.search(r'Node-kind: ', line, re.M | re.I):
+            kind = re.sub(r'Node-kind: ', '', line)
+        elif re.search(r'Node-action: ', line, re.M | re.I):
+            action = re.sub(r'Node-action: ', '', line)
+        elif re.search(r'Node-path: ',line, re.M | re.I) and content_flag == True or action == 'delete':
+            if action != 'delete':
+                content_flag = False
+                content.pop(0)
+                content.pop()
+            myjson = {
+                'Node-path': path,
+                'Node-kind': kind,
+                'Node-action': action,
+                'Text-content': content
+            }
+            u_rev.append(myjson)
+            action = ''
+            path = re.sub(r'Node-path: ', '', line)
+            path_flag = True
+            content = []
+        elif re.search(r'Text-content-length: ', line, re.M | re.I):
+            content_flag = True
+        if path_flag == True and content_flag == True:
+            if re.search(r'Text-content-length: ', line, re.M | re.I) or re.search(r'Content-length: ', line, re.M | re.I):
+                continue
+            content.append(line)
+        if catch_index == catch_len:
+            if action != 'delete' and action != '':
+                content.pop(0)
+                content.pop()
+                content.pop()
+            myjson = {
+                'Node-path': path,
+                'Node-kind': kind,
+                'Node-action': action,
+                'Text-content': content
+            }
+            u_rev.append(myjson)
+    data_len = len(u_rev)
+    for i in range(data_len):
+        rev_path = sys_dir_path + '/' + u_rev[i]['Node-path']
+        if u_rev[i]['Node-action'] == 'delete':
+            remove_path = rev_path + '.json'
+            os.remove(remove_path)
+            continue
+        elif u_rev[i]['Node-action'] == 'add':
+            if u_rev[i]['Node-kind'] == 'dir':
+                os.makedirs(rev_path)
+            else:
+                rev_split = rev_path.split('/')
+                rev_split_len = len(rev_split)
+                rev_file = rev_split[rev_split_len - 1]
+                rev_split.remove(rev_file)
+                rev_path_start = '/'
+                rev_dir = rev_path_start.join(rev_split)
+                if not os.path.exists(rev_dir):
+                    os.makedirs(rev_dir)
+                revision_filepath = rev_path + '.json'
+                with open(revision_filepath, 'w') as f:
+                    addjson = {
+                        'Node-path': '',
+                        'Node-kind': '',
+                        'Node-action': '',
+                        'Text-content': []
+                    }
+                    json.dump(addjson, f)
+        elif u_rev[i]['Node-action'] == 'change':
+            change_flag = True
+            revision_filepath = rev_path + '.json'
+            with open(revision_filepath) as f:
+                origin_rev = json.load(f)
+            b = len(u_rev[i]['Text-content'])
+            a = len(origin_rev['Text-content'])
+            if b < a:
+                for count1 in range(b):
+                    if u_rev[i]['Text-content'][count1] != origin_rev['Text-content'][count1]:
+                        origin_rev['Text-content'].append(u_rev[i]['Text-content'][count1])
+            else:
+                for count2 in range(a):
+                    if u_rev[i]['Text-content'][count2] != origin_rev['Text-content'][count2]:
+                        origin_rev['Text-content'].append(u_rev[i]['Text-content'][count2])
+                for count3 in range(a, b):
+                    origin_rev['Text-content'].append(u_rev[i]['Text-content'][count3])
+            changejson = {
+                'Node-path': u_rev[i]['Node-path'],
+                'Node-kind': u_rev[i]['Node-kind'],
+                'Node-action': u_rev[i]['Node-action'],
+                'Text-content': origin_rev['Text-content']
+            }
+            with open(revision_filepath, 'w') as f:
+                json.dump(changejson, f)
+    if re.search(r'Node-action: add', revision, re.M | re.I) or re.search(r'Node-action: delete', revision, re.M | re.I):
+    	return revision
+    elif change_flag == True:
+        new_flag = False
+
+        first_flag = True
+        last_flag = True
+        rev_index = 0
+        rev_changed_path = ''
+        for line in catch:
+            if re.search(r'Text-content-length: ', line, re.M | re.I):
+                new_flag = True
+                last_flag = True
+                first_flag = True
+            if re.search(r'Node-path: ', line, re.M | re.I):
+                new_flag = False
+                rev_changed_path = sys_dir_path + '/' + re.sub(r'Node-path: ', '', line)
+            if new_flag == True:
+                if re.search(r'Text-content-length: ', line, re.M | re.I) or re.search(r'Content-length: ', line, re.M | re.I):
+                    changed_revision += line + '\n'
+                elif first_flag == True and line == '':
+                    changed_revision += line + '\n'
+                    first_flag = False
+                elif last_flag == True:
+                    with open(rev_changed_path + '.json') as f:
+                        json_rev = json.load(f)
+                    first_rev_len = len(json_rev['Text-content'])
+                    for k in range(first_rev_len):
+                        changed_revision += json_rev['Text-content'][k] + '\n'
+                    changed_revision += '\n'
+                    rev_index += 1
+                    last_flag = False
+            elif new_flag == False:
+                changed_revision += line + '\n'
+    return changed_revision
+
+
+
+logging.debug('---------------------- revision start -----------------------------------')
+#patternOfPath = '(?:Node-path|Node-copyfrom-path): ([A-Z])(/[^\n]*)'
+patternOfPath = '(?:Node-path|Node-copyfrom-path): ([A-z]*)(/[^\n]*)'
+
+pattern = '\n(?:Node-path|Node-copyfrom-path): ([^\n]*)\n'
+
+if re.search(patternOfPath, revision_content) is not None:    
+    match = re.search(patternOfPath, revision_content)
+    #logging.debug(match.group(0))
+    #logging.debug(match.group(1))
+    
+    parameter = match.group(2)
+
+    sector1 = parameter.split('/')
+    th1 = len(sector1)
+    tt1 = '/'
+    mmt2 = sector1[th1-1]
+    sector1.remove(mmt2)
+    mmt1 = match.group(1) + tt1.join(sector1)   
+    
+    #pre = re.sub(': [^\n]*', ': ', match.group(0), 1)
+    restok = match.group(2)
+    pre = re.sub(': [^\n]*', ': ', match.group(0), 1)
+    #logging.debug(mmt1)
+    #logging.debug(mmt2)
+    #logging.debug(parameter)
+    for mapping in MAPPINGS:
+	 	#if os.path.samefile(mapping['FROM']['REPOS'], REPOS) and mapping['FROM']['PATH'] == mmt1:
+	 	if os.path.samefile(mapping['FROM']['REPOS'], REPOS) and re.search(mapping['FROM']['PATH'], mmt1, re.M | re.I):
+	 		#if re.search('.pub', match.group(2)):
+	 		if re.search(r'.pub', mmt2) or re.search(r'.properties', mmt2) is not None:
+	 			#str1 = mapping['FROM']['REPOS']
+	 			#str2 = mapping['FROM']['PATH']
+	 			continue
+	 		else:
+	  			str1 = mapping['TO']['REPOS']
+	  			str2 = mapping['TO']['PATH']
+	  		cache = revision_content.split('\n')
+	  		#logging.debug(cache)
+	  		str11 = ''
+			str22 = ''
+			for line in cache:
+				str22 = re.sub(mapping['FROM']['PATH'], str2, line)
+				str11 += str22 + '\n'
+	  		#new_revision = re.sub(pattern, pre + str2 + mmt2) + '\n', revision_content)
+	  		logging.debug('------------------ final revision ---------------------')
+	  		new_revision = str11
+	  		#logging.debug(new_revision)
+	  		final_revision = update_revision(new_revision)
+	  		#logging.debug(final_revision)
+	  		load_process = Popen([SVNADMIN, 'load', str1, '-r', REV, '--ignore-uuid', '-q'], stdin=PIPE, stderr=PIPE)
+	  		_, errors = load_process.communicate(final_revision)
+	  		logging.debug('------------------------- steps -----------------')
+	  		if errors:
+	  			there_were_errors = True   
+    
+if there_were_errors:
+    sys.exit(1)
+sys.exit(0)
+
